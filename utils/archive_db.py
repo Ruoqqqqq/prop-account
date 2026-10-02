@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS equity_adjustments (
 CREATE INDEX IF NOT EXISTS idx_equity_adjustments_client_month
     ON equity_adjustments (client_no, month);
 
+CREATE TABLE IF NOT EXISTS credit_excess (
+    client_no TEXT PRIMARY KEY,
+    amount REAL NOT NULL,
+    note TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS testing_periods (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_no TEXT NOT NULL,
@@ -366,6 +373,51 @@ def load_adjustments(client_no: str | None = None, month: str | None = None,
     finally:
         conn.close()
     return df
+
+
+def set_credit_excess(client_nos: list[str], amount: float, note: str | None,
+                       db_path: Path = DB_PATH) -> None:
+    """Set (or replace) the static credit excess for each account.
+
+    MarginNowV2's live balance carries a static credit excess that FinancialSummary's
+    EOD balance doesn't, so it has to come off the live balance before comparing the two.
+    """
+    now = pd.Timestamp.now().isoformat()
+    conn = get_connection(db_path)
+    try:
+        conn.executemany(
+            "INSERT INTO credit_excess (client_no, amount, note, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(client_no) DO UPDATE SET amount=excluded.amount, note=excluded.note, "
+            "updated_at=excluded.updated_at",
+            [(c, float(amount), note, now) for c in client_nos],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_credit_excess(client_no: str, db_path: Path = DB_PATH) -> None:
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DELETE FROM credit_excess WHERE client_no = ?", (client_no,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_credit_excess(db_path: Path = DB_PATH) -> pd.DataFrame:
+    conn = get_connection(db_path)
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM credit_excess ORDER BY client_no", conn, parse_dates=["updated_at"]
+        )
+    finally:
+        conn.close()
+
+
+def load_credit_excess_map(db_path: Path = DB_PATH) -> dict[str, float]:
+    df = load_credit_excess(db_path)
+    return dict(zip(df["client_no"], df["amount"]))
 
 
 def load_adjustments_map(month: str, db_path: Path = DB_PATH) -> dict[str, float]:

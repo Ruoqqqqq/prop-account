@@ -17,6 +17,7 @@ All input and generated data lives in `data/`, separate from the app code:
 
 1. **Prop accounts** — the prop account list from the equity monitor file, joined with live equity/margin figures, showing position ratio, breach flags, and P&L (see below). Includes a manual "Run snapshot now" button, **Backfill historical EOD data** and **Monthly equity adjustments** uploaders, a **Testing periods** section (with edit/delete and approval-proof upload), and a **Remarks & supporting documents** section for logging notes and screenshots against a breach.
 2. **Archive history** — browse everything the archive job has recorded, one row per snapshot batch with a per-batch CSV download (account number, position ratio, intra lots, breach, and P&L), filter by account/date range, chart position ratio over time.
+3. **Settings** — credit excess (excluded from the live balance), P&L alert thresholds, monthly equity adjustments, testing periods and EOD backfill. Anyone can view; changing anything needs the admin password (see below).
 
 ## Prop account P&L definitions
 
@@ -166,6 +167,14 @@ To check it's registered or remove it later:
 Get-ScheduledTask -TaskName "NBS Prop Account Archive"
 Unregister-ScheduledTask -TaskName "NBS Prop Account Archive" -Confirm:$false
 ```
+
+## Settings & admin password
+
+All configuration lives on the **Settings** tab. It is read-only until the admin password is entered. The password is not stored in the code: set the `NBS_ADMIN_PASSWORD` environment variable, or put `admin_password = "..."` in `.streamlit/secrets.toml` (gitignored), then restart the app. With neither set, nobody can modify settings.
+
+**Credit excess:** `MarginNowV2.xls`'s live balance carries a static credit excess that `FinancialSummary.xls`'s EOD balance doesn't. The per-account amount saved on Settings is subtracted from the live balance before intraday/monthly P&L and alerts are computed (`alert_engine.build_prop_status`, also applied to archived batches on Archive history). Stored in the `credit_excess` table.
+
+**Monthly adjustments:** removed from the month's first trading day -- from `intraday_pnl` until the first EOD of the month exists, from `daily_pnl_prev_day` once it is the last EOD, and from `monthly_pnl` throughout (matches the Excel monitor's `Update_MTD_History`).
 
 ## Files
 
