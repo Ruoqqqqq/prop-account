@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 .venv/
 .claude/
+
+# admin password etc.
+.streamlit/secrets.toml

@@ -36,6 +36,12 @@ def _adjustments_for_month(month: str) -> dict[str, float]:
     return _adjustments_cache[month]
 
 
+def _credit_excess() -> dict[str, float]:
+    if "_credit" not in _adjustments_cache:
+        _adjustments_cache["_credit"] = archive_db.load_credit_excess_map()
+    return _adjustments_cache["_credit"]
+
+
 def _batch_pnl(batch_rows: pd.DataFrame) -> pd.DataFrame:
     """Per-account intraday/daily-prev-day/monthly P&L as of this batch's own capture time.
 
@@ -48,7 +54,9 @@ def _batch_pnl(batch_rows: pd.DataFrame) -> pd.DataFrame:
     captured_at = batch_rows["captured_at"].iloc[0]
     cutoff = captured_at.strftime("%Y%m%d")
     eod_as_of_then = eod_history_full[eod_history_full["report_date"] <= cutoff]
-    live_equity = batch_rows[["client_no", "equity_bal"]]
+    live_equity = batch_rows[["client_no", "equity_bal"]].copy()
+    # Credit excess is static, so today's value is applied to every archived batch.
+    live_equity["equity_bal"] = live_equity["equity_bal"] - live_equity["client_no"].map(_credit_excess()).fillna(0)
     adjustments = _adjustments_for_month(captured_at.strftime("%Y-%m"))
     pnl = archive_db.compute_eod_pnl(eod_as_of_then, live_equity, captured_at, adjustments=adjustments)
     cols = ["client_no", "intraday_pnl", "daily_pnl_prev_day", "monthly_pnl"]

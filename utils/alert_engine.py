@@ -45,12 +45,18 @@ def build_prop_status(data_dir: Path) -> PropStatus | None:
     live_equity = live[["Client_No", "Adj. Equity Bal with Coll."]].rename(
         columns={"Client_No": "client_no", "Adj. Equity Bal with Coll.": "equity_bal"}
     )
+    # Static credit excess sits in MarginNowV2's live balance but not in the EOD balance,
+    # so take it off here -- otherwise every intraday/monthly P&L is skewed by that amount.
+    credit_excess = archive_db.load_credit_excess_map()
+    live_equity["equity_bal"] = live_equity["equity_bal"] - live_equity["client_no"].map(credit_excess).fillna(0)
     current_month = pd.Timestamp.now().strftime("%Y-%m")
     adjustments_map = archive_db.load_adjustments_map(current_month)
     now_ts = pd.Timestamp.now()
     pnl = archive_db.compute_eod_pnl(eod_history, live_equity, now_ts, adjustments=adjustments_map)
 
     merged = live.merge(pnl, left_on="Client_No", right_on="client_no", how="left")
+    merged["credit_excess"] = merged["Client_No"].map(credit_excess).fillna(0.0)
+    merged["equity_ex_credit"] = merged["Adj. Equity Bal with Coll."] - merged["credit_excess"]
     merged["is_breach"] = merged.get("Breach", pd.Series(dtype=str)).astype(str).str.upper().eq("Y")
 
     def _testing_label(client_no: str) -> str:
