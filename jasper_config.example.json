@@ -1,0 +1,7 @@
+{
+  "exe_path": "C:\\path\\to\\JasperDownloader.exe",
+  "credential_username": "jasper",
+  "keyword": "REPLACE_WITH_YOUR_KEYWORD",
+  "reports": ["MarginNowV2", "FinancialSummary"],
+  "timeout_seconds": 300
+}

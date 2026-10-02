@@ -1,0 +1,12 @@
+# client data and generated files
+data/
+*.db
+*.sqlite*
+
+# local config / secrets
+jasper_config.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
