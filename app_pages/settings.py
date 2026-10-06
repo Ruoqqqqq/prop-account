@@ -55,12 +55,34 @@ with st.container(border=True):
     if ce_df.empty:
         st.caption("No credit excess configured.")
     else:
-        st.dataframe(
-            ce_df.rename(columns={"client_no": "Account", "amount": "Amount", "note": "Note", "updated_at": "Updated at"}),
-            hide_index=True,
-            column_config={"Amount": st.column_config.NumberColumn(format="%.2f")},
-        )
-        if admin:
+        ce_view = ce_df.rename(columns={"client_no": "Account", "amount": "Amount", "note": "Note", "updated_at": "Updated at"})
+        ce_config = {"Amount": st.column_config.NumberColumn(format="%.2f")}
+        if not admin:
+            st.dataframe(ce_view, hide_index=True, column_config=ce_config)
+        else:
+            st.caption("Edit an amount or note directly in the table, then click Save edits.")
+            ce_edited = st.data_editor(
+                ce_view, hide_index=True, column_config=ce_config, disabled=["Account", "Updated at"],
+                key="ce_editor",
+            )
+            if st.button("Save edits", icon=":material/save:", key="ce_edit_save"):
+                changed = 0
+                for (_, before), (_, after) in zip(ce_view.iterrows(), ce_edited.iterrows()):
+                    same_note = (before["Note"] if pd.notna(before["Note"]) else "") == (after["Note"] if pd.notna(after["Note"]) else "")
+                    if before["Amount"] == after["Amount"] and same_note:
+                        continue
+                    if pd.isna(after["Amount"]):
+                        st.warning(f"{after['Account']}: amount can't be blank (use Remove to delete it).")
+                        continue
+                    archive_db.set_credit_excess(
+                        [after["Account"]], float(after["Amount"]), after["Note"] if pd.notna(after["Note"]) and after["Note"] else None
+                    )
+                    changed += 1
+                if changed:
+                    _saved(f"Updated credit excess for {changed} account(s)")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
             with st.container(horizontal=True):
                 clear_acct = st.selectbox("Remove credit excess for", ce_df["client_no"], key="ce_clear_acct")
                 if st.button("Remove", icon=":material/delete:", key="ce_clear_btn"):
@@ -127,10 +149,30 @@ with st.container(border=True):
             [{"Account": acct, **{pnl_thresholds.METRICS[m]: v for m, v in metrics.items()}}
              for acct, metrics in sorted(thresholds.items())]
         )
-        st.dataframe(
-            th_table, hide_index=True,
-            column_config={name: st.column_config.NumberColumn(format="%.2f") for name in pnl_thresholds.METRICS.values()},
-        )
+        th_config = {name: st.column_config.NumberColumn(format="%.2f") for name in pnl_thresholds.METRICS.values()}
+        if not admin:
+            st.dataframe(th_table, hide_index=True, column_config=th_config)
+        else:
+            st.caption("Edit a threshold directly in the table (clear a cell for no alert on that metric), then click Save edits.")
+            th_edited = st.data_editor(
+                th_table, hide_index=True, column_config=th_config, disabled=["Account"], key="th_editor",
+            )
+            if st.button("Save edits", icon=":material/save:", key="th_edit_save"):
+                metric_by_label = {label: key for key, label in pnl_thresholds.METRICS.items()}
+                changed = 0
+                for (_, before), (_, after) in zip(th_table.iterrows(), th_edited.iterrows()):
+                    if before.equals(after):
+                        continue
+                    pnl_thresholds.set_account_thresholds(after["Account"], {
+                        metric_by_label[label]: (float(after[label]) if pd.notna(after[label]) else None)
+                        for label in metric_by_label
+                    })
+                    changed += 1
+                if changed:
+                    _saved(f"Updated thresholds for {changed} account(s)")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
         if admin:
             with st.container(horizontal=True):
                 clear_th_acct = st.selectbox("Remove thresholds for", sorted(thresholds), key="pnl_th_clear_acct")
