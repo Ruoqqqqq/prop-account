@@ -72,52 +72,16 @@ with st.container(border=True):
 with st.container(border=True):
     st.subheader("P&L alert thresholds")
     st.caption(
-        "Set a default loss floor per metric, then optionally override it for specific accounts. "
-        "Any account whose P&L falls at or below its effective threshold triggers an alert. "
-        "Leave a field blank to disable alerting for that metric."
+        "Set a loss floor per metric for each account. An account alerts when its P&L falls at or below "
+        "its threshold. There is no default: an account with no threshold here is never alerted on. "
+        "Saving overwrites all three metrics for the selected accounts; a blank field means no alert for that metric."
     )
-    threshold_config = pnl_thresholds.load_config()
-
-    st.markdown("**Default (applies to every account without its own override)**")
-    if admin:
-        with st.form("pnl_default_threshold_form", border=False):
-            with st.container(horizontal=True):
-                th_intraday = st.number_input(
-                    "Intraday P&L alert ≤", value=threshold_config["default"].get("intraday_pnl"), step=1000.0,
-                    key="pnl_th_default_intraday",
-                )
-                th_daily = st.number_input(
-                    "Daily P&L (prev day) alert ≤", value=threshold_config["default"].get("daily_pnl_prev_day"),
-                    step=1000.0, key="pnl_th_default_daily",
-                )
-                th_monthly = st.number_input(
-                    "Monthly P&L alert ≤", value=threshold_config["default"].get("monthly_pnl"), step=1000.0,
-                    key="pnl_th_default_monthly",
-                )
-            submitted_default_thresholds = st.form_submit_button("Save default", icon=":material/save:")
-
-        if submitted_default_thresholds:
-            threshold_config["default"] = {
-                "intraday_pnl": th_intraday, "daily_pnl_prev_day": th_daily, "monthly_pnl": th_monthly,
-            }
-            pnl_thresholds.save_config(threshold_config)
-            _saved("Default P&L thresholds saved")
-    else:
-        defaults = threshold_config["default"]
-        st.write(", ".join(
-            f"{pnl_thresholds.METRICS[m]}: {defaults[m]:,.2f}" if defaults.get(m) is not None
-            else f"{pnl_thresholds.METRICS[m]}: off"
-            for m in pnl_thresholds.METRICS
-        ))
-
-    st.markdown("**Per-account overrides**")
     if admin:
         def _load_account_thresholds() -> None:
             accts = st.session_state.get("pnl_th_accounts") or []
             if len(accts) != 1:
-                # Multiple (or no) accounts selected -- their existing overrides may differ,
-                # so leave the fields blank rather than showing one account's values as if
-                # they applied to all of them.
+                # Several (or no) accounts selected -- their thresholds may differ, so leave the
+                # fields blank rather than showing one account's values as if they applied to all.
                 st.session_state.pnl_th_acct_intraday = None
                 st.session_state.pnl_th_acct_daily = None
                 st.session_state.pnl_th_acct_monthly = None
@@ -129,8 +93,8 @@ with st.container(border=True):
 
         st.multiselect(
             "Accounts", sorted(client_nos), key="pnl_th_accounts", on_change=_load_account_thresholds,
-            help="Select one or more accounts to set the same override for all of them at once. "
-            "Selecting a single account loads its existing override, if any.",
+            help="Select several accounts to give them the same thresholds at once. "
+            "Selecting a single account loads its existing thresholds, if any.",
         )
         with st.form("pnl_account_threshold_form", border=False):
             with st.container(horizontal=True):
@@ -143,36 +107,40 @@ with st.container(border=True):
                 th_acct_monthly = st.number_input(
                     "Monthly P&L alert ≤", value=None, step=1000.0, key="pnl_th_acct_monthly",
                 )
-            st.caption("Leave a field blank to fall back to the default for that metric.")
-            submitted_account_thresholds = st.form_submit_button("Save account override", icon=":material/save:")
+            if st.form_submit_button("Save thresholds", icon=":material/save:"):
+                th_accounts = st.session_state.pnl_th_accounts
+                if not th_accounts:
+                    st.warning("Select at least one account first.")
+                else:
+                    for th_account in th_accounts:
+                        pnl_thresholds.set_account_thresholds(th_account, {
+                            "intraday_pnl": th_acct_intraday, "daily_pnl_prev_day": th_acct_daily,
+                            "monthly_pnl": th_acct_monthly,
+                        })
+                    _saved(f"Saved thresholds for {len(th_accounts)} account(s)")
 
-        if submitted_account_thresholds:
-            th_accounts = st.session_state.pnl_th_accounts
-            if not th_accounts:
-                st.warning("Select at least one account first.")
-            else:
-                for th_account in th_accounts:
-                    pnl_thresholds.set_account_thresholds(th_account, {
-                        "intraday_pnl": th_acct_intraday, "daily_pnl_prev_day": th_acct_daily,
-                        "monthly_pnl": th_acct_monthly,
-                    })
-                _saved(f"Saved threshold override for {len(th_accounts)} account(s)")
-
-    current_overrides = pnl_thresholds.load_config()["accounts"]
-    if current_overrides:
-        st.caption("Current overrides:")
-        for acct, metrics in sorted(current_overrides.items()):
-            with st.container(horizontal=True):
-                vals = ", ".join(
-                    f"{pnl_thresholds.METRICS[m]}: {v:,.2f}" for m, v in metrics.items() if v is not None
-                ) or "no metrics set"
-                st.write(f"**{acct}** — {vals}")
-                if admin and st.button("Clear", key=f"clear_pnl_override_{acct}", icon=":material/close:"):
-                    pnl_thresholds.clear_account_thresholds(acct)
-                    _saved(f"Cleared override for {acct}")
-                    st.rerun()
+    thresholds = pnl_thresholds.load_config()["accounts"]
+    if not thresholds:
+        st.caption("No thresholds configured — no P&L alerts will fire.")
     else:
-        st.caption("No per-account overrides set — every account uses the default.")
+        th_table = pd.DataFrame(
+            [{"Account": acct, **{pnl_thresholds.METRICS[m]: v for m, v in metrics.items()}}
+             for acct, metrics in sorted(thresholds.items())]
+        )
+        st.dataframe(
+            th_table, hide_index=True,
+            column_config={name: st.column_config.NumberColumn(format="%.2f") for name in pnl_thresholds.METRICS.values()},
+        )
+        if admin:
+            with st.container(horizontal=True):
+                clear_th_acct = st.selectbox("Remove thresholds for", sorted(thresholds), key="pnl_th_clear_acct")
+                if st.button("Remove", icon=":material/delete:", key="pnl_th_clear_btn"):
+                    pnl_thresholds.clear_account_thresholds(clear_th_acct)
+                    _saved(f"Removed thresholds for {clear_th_acct}")
+                    st.rerun()
+    missing = sorted(set(client_nos) - set(thresholds))
+    if missing:
+        st.caption(f"Accounts with no thresholds (never alerted): {', '.join(missing)}")
 
 # ---------------------------------------------------------------- monthly adjustments
 with st.container(border=True):
