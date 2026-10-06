@@ -2,13 +2,12 @@
 
 Persisted to data/pnl_alert_thresholds.json:
 {
-    "default": {"intraday_pnl": None, "daily_pnl_prev_day": None, "monthly_pnl": None},
-    "accounts": {"<client_no>": {...same shape...}, ...}
+    "accounts": {"<client_no>": {"intraday_pnl": None, "daily_pnl_prev_day": None, "monthly_pnl": None}, ...}
 }
 Each threshold is a loss floor: an account alerts on that metric when its
-P&L falls at or below the value. None means no threshold. A per-account
-value overrides "default" for that one metric on that one account; accounts
-with no override fall back to "default".
+P&L falls at or below the value. None means no threshold, and an account
+with no entry is never alerted on. There is no global default; a "default"
+key left over in an older file is ignored.
 """
 
 from __future__ import annotations
@@ -33,14 +32,11 @@ def _empty_metrics() -> dict:
 
 def load_config() -> dict:
     if not THRESHOLDS_PATH.exists():
-        return {"default": _empty_metrics(), "accounts": {}}
+        return {"accounts": {}}
     try:
         saved = json.loads(THRESHOLDS_PATH.read_text())
     except (json.JSONDecodeError, OSError):
-        return {"default": _empty_metrics(), "accounts": {}}
-
-    default = _empty_metrics()
-    default.update({k: v for k, v in saved.get("default", {}).items() if k in METRICS})
+        return {"accounts": {}}
 
     accounts = {}
     for client_no, metrics in saved.get("accounts", {}).items():
@@ -48,7 +44,7 @@ def load_config() -> dict:
         m.update({k: v for k, v in metrics.items() if k in METRICS})
         accounts[client_no] = m
 
-    return {"default": default, "accounts": accounts}
+    return {"accounts": accounts}
 
 
 def save_config(config: dict) -> None:
@@ -70,8 +66,5 @@ def clear_account_thresholds(client_no: str) -> None:
 
 
 def effective_threshold(config: dict, client_no: str, metric: str) -> float | None:
-    """The per-account override if set, else the default for that metric."""
-    account_value = config.get("accounts", {}).get(client_no, {}).get(metric)
-    if account_value is not None:
-        return account_value
-    return config.get("default", {}).get(metric)
+    """The account's own threshold for that metric, or None if it has none."""
+    return config.get("accounts", {}).get(client_no, {}).get(metric)
