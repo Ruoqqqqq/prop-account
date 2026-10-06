@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS credit_excess (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS fx_rates (
+    pair TEXT PRIMARY KEY,
+    rate REAL NOT NULL,
+    rate_date TEXT,
+    fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS testing_periods (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_no TEXT NOT NULL,

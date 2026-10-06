@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from utils import admin_auth, archive_db, data_loader, pnl_thresholds
+from utils import admin_auth, archive_db, data_loader, fx, pnl_thresholds
 from utils.cached_loaders import load_prop_snapshot
 from utils.data_loader import DATA_DIR
 
@@ -94,10 +94,19 @@ with st.container(border=True):
 with st.container(border=True):
     st.subheader("P&L alert thresholds")
     st.caption(
-        "Set a loss floor per metric for each account. An account alerts when its P&L falls at or below "
-        "its threshold. There is no default: an account with no threshold here is never alerted on. "
+        "Set a loss floor per metric for each account, **in USD**. Every P&L figure is in SGD, so each threshold "
+        "is converted at the live USD/SGD rate when it is checked. An account alerts when its P&L falls at or "
+        "below its threshold. There is no default: an account with no threshold here is never alerted on. "
         "Saving overwrites all three metrics for the selected accounts; a blank field means no alert for that metric."
     )
+    _rate = fx.get_usd_sgd()
+    if _rate is None:
+        st.error("No USD/SGD rate available (feed unreachable and none saved yet) — P&L alerts can't be evaluated.")
+    else:
+        st.caption(
+            f"Current rate: 1 USD = {_rate.rate:.4f} SGD (rate date {_rate.rate_date}"
+            + ("" if _rate.live else "; feed unreachable, using last saved rate") + ")"
+        )
     if admin:
         def _load_account_thresholds() -> None:
             accts = st.session_state.get("pnl_th_accounts") or []
@@ -121,13 +130,13 @@ with st.container(border=True):
         with st.form("pnl_account_threshold_form", border=False):
             with st.container(horizontal=True):
                 th_acct_intraday = st.number_input(
-                    "Intraday P&L alert ≤", value=None, step=1000.0, key="pnl_th_acct_intraday",
+                    "Intraday P&L alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_intraday",
                 )
                 th_acct_daily = st.number_input(
-                    "Daily P&L (prev day) alert ≤", value=None, step=1000.0, key="pnl_th_acct_daily",
+                    "Daily P&L (prev day) alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_daily",
                 )
                 th_acct_monthly = st.number_input(
-                    "Monthly P&L alert ≤", value=None, step=1000.0, key="pnl_th_acct_monthly",
+                    "Monthly P&L alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_monthly",
                 )
             if st.form_submit_button("Save thresholds", icon=":material/save:"):
                 th_accounts = st.session_state.pnl_th_accounts
