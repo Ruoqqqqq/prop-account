@@ -22,7 +22,7 @@ from utils.snapshot_runner import _jasper_configured
 log = logging.getLogger(__name__)
 
 STATE_KEY = "last_eod_success_date"
-DEFAULT_ADJUSTMENT_FILE = "MonthlyAdjustment.xls"
+DEFAULT_ADJUSTMENT_FILE = "ProprietoryMonitoring.xls"
 
 
 def _financial_summary_ready(fs_df: pd.DataFrame, today: pd.Timestamp) -> tuple[bool, str]:

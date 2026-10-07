@@ -7,9 +7,9 @@
   },
   "reports": {
     "live": ["MarginNowV2", "Propriety_Account_Equity_Monitor_V2"],
-    "eod": ["FinancialSummary", "MonthlyAdjustment"]
+    "eod": ["FinancialSummary", "ProprietoryMonitoring"]
   },
   "equity_monitor_via_jasper": true,
-  "adjustment_file": "MonthlyAdjustment.xls",
-  "timeout_seconds": 300
+  "adjustment_file": "ProprietoryMonitoring.xls",
+  "timeout_seconds": 420
 }

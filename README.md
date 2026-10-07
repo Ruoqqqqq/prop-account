@@ -89,7 +89,7 @@ Reports that need a **trade date** (FinancialSummary, the monthly adjustment fil
 | `live` | `MarginNowV2`, prop equity monitor | every 10 min | `archive_snapshot.py` |
 | `eod` | `FinancialSummary`, monthly adjustment | once a day from ~10:30, retried until it succeeds | `eod_refresh.py` |
 
-In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `MonthlyAdjustment.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor_V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
+In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `ProprietoryMonitoring.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor_V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
 
 **How the dashboard always shows the latest good EOD data:** the dashboard never reads FinancialSummary directly -- it reads the EOD history archived in SQLite. `eod_refresh.py` only archives a download that really has a new trade date (non-empty, not future-dated, not all-zero equity). An empty/not-ready file is logged as "not ready" and the previous day's data stays in place until a later retry succeeds; once a run succeeds, further runs that day exit immediately without calling Jasper. `data/eod_refresh_log.txt` shows each attempt; `python eod_refresh.py --force` re-runs even after a success.
 
