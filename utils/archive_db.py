@@ -72,6 +72,26 @@ CREATE TABLE IF NOT EXISTS credit_excess (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS alert_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    username TEXT NOT NULL,
+    remark TEXT,
+    file_path TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_actions_alert ON alert_actions (alert_id);
+
+CREATE TABLE IF NOT EXISTS settings_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    username TEXT NOT NULL,
+    area TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT
+);
+
 CREATE TABLE IF NOT EXISTS daily_adjustments (
     report_date TEXT NOT NULL,
     client_no TEXT NOT NULL,
@@ -130,6 +150,7 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
     _ensure_column(conn, "testing_periods", "proof_path", "TEXT")
+    _ensure_column(conn, "remarks", "username", "TEXT")
     return conn
 
 
@@ -316,7 +337,8 @@ def compute_eod_pnl(eod_history: pd.DataFrame, live_equity: pd.DataFrame, now: p
 
 
 def add_remark(client_no: str, remark_text: str, screenshot_bytes: bytes | None,
-                screenshot_filename: str | None, db_path: Path = DB_PATH) -> None:
+                screenshot_filename: str | None, db_path: Path = DB_PATH,
+                username: str | None = None) -> None:
     screenshot_path = None
     if screenshot_bytes:
         ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -328,8 +350,8 @@ def add_remark(client_no: str, remark_text: str, screenshot_bytes: bytes | None,
     conn = get_connection(db_path)
     try:
         conn.execute(
-            "INSERT INTO remarks (client_no, created_at, remark_text, screenshot_path) VALUES (?, ?, ?, ?)",
-            (client_no, pd.Timestamp.now().isoformat(), remark_text, screenshot_path),
+            "INSERT INTO remarks (client_no, created_at, remark_text, screenshot_path, username) VALUES (?, ?, ?, ?, ?)",
+            (client_no, pd.Timestamp.now().isoformat(), remark_text, screenshot_path, username),
         )
         conn.commit()
     finally:
@@ -679,3 +701,112 @@ def active_alert_count(db_path: Path = DB_PATH) -> int:
     finally:
         conn.close()
     return int(row[0]) if row else 0
+
+
+
+# --------------------------------------------------------------------------- alert handling
+ALERT_ACTIONS = {
+    "dismiss": "Dismissed with remark",
+    "supporting": "Supporting document uploaded",
+    "testing": "Testing progress logged",
+}
+
+
+def load_alerts_with_status(db_path: Path = DB_PATH) -> pd.DataFrame:
+    """Every alert with who handled it (the first action taken) and how.
+
+    An alert is *handled* once anyone takes any action on it; until then, while its condition
+    is still true (resolved_at empty), it is *open* and needs action.
+    """
+    conn = get_connection(db_path)
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT a.*, act.action AS action, act.username AS handled_by, act.remark AS action_remark,
+                   act.file_path AS action_file, act.created_at AS handled_at
+            FROM alert_log a
+            LEFT JOIN alert_actions act
+              ON act.id = (SELECT MIN(id) FROM alert_actions WHERE alert_id = a.id)
+            ORDER BY a.triggered_at DESC
+            """,
+            conn, parse_dates=["triggered_at", "resolved_at", "handled_at"],
+        )
+    finally:
+        conn.close()
+    return df
+
+
+def load_pending_alerts(db_path: Path = DB_PATH) -> pd.DataFrame:
+    """Alerts whose condition is still true and that nobody has acted on yet."""
+    df = load_alerts_with_status(db_path)
+    return df[df["resolved_at"].isna() & df["handled_by"].isna()].sort_values("triggered_at").reset_index(drop=True)
+
+
+def record_alert_action(alert_id: int, action: str, username: str, remark: str | None = None,
+                         file_bytes: bytes | None = None, file_name: str | None = None,
+                         db_path: Path = DB_PATH) -> tuple[bool, str | None]:
+    """Claim an alert by taking an action on it. Returns (ok, handled_by).
+
+    Only the first action wins: if a teammate already acted (even a moment ago, from another
+    browser), nothing is written and (False, their_username) comes back so the UI can say
+    the alert is already handled. (False, None) means the alert doesn't exist.
+    """
+    if action not in ALERT_ACTIONS:
+        raise ValueError(f"unknown alert action {action!r}")
+    conn = get_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")  # serialises two people acting at the same moment
+        if conn.execute("SELECT 1 FROM alert_log WHERE id = ?", (alert_id,)).fetchone() is None:
+            conn.rollback()
+            return False, None
+        existing = conn.execute(
+            "SELECT username FROM alert_actions WHERE alert_id = ? ORDER BY id LIMIT 1", (alert_id,)
+        ).fetchone()
+        if existing:
+            conn.rollback()
+            return False, existing[0]
+
+        file_path = None
+        if file_bytes:
+            dest_dir = ATTACHMENTS_DIR / "alerts"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(file_name or "attachment").name
+            dest = dest_dir / f"alert{alert_id}_{pd.Timestamp.now():%Y%m%d%H%M%S%f}_{safe_name}"
+            dest.write_bytes(file_bytes)
+            file_path = str(dest.relative_to(BASE_DIR))
+        conn.execute(
+            "INSERT INTO alert_actions (alert_id, action, username, remark, file_path, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (alert_id, action, username, remark, file_path, pd.Timestamp.now().isoformat()),
+        )
+        conn.commit()
+        return True, None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- settings audit trail
+def log_settings_change(username: str, area: str, action: str, detail: str | None = None,
+                         db_path: Path = DB_PATH) -> None:
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO settings_audit (created_at, username, area, action, detail) VALUES (?, ?, ?, ?, ?)",
+            (pd.Timestamp.now().isoformat(), username, area, action, detail),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_settings_audit(db_path: Path = DB_PATH) -> pd.DataFrame:
+    conn = get_connection(db_path)
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM settings_audit ORDER BY created_at DESC, id DESC", conn, parse_dates=["created_at"]
+        )
+    finally:
+        conn.close()
