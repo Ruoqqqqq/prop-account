@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from utils import alert_engine, archive_db, pnl_thresholds
+from utils import alert_engine, archive_db, fx, pnl_thresholds
 from utils.cached_loaders import load_prop_snapshot
 from utils.snapshot_runner import run_snapshot
 from utils.data_loader import DATA_DIR
@@ -22,6 +22,9 @@ live, report_ts, eq_path = result
 with st.container(horizontal=True):
     st.caption(f"Prop account list source: {eq_path.name}")
     st.caption(f"Report time: {report_ts}")
+    _fx = fx.get_usd_sgd()
+    if _fx is not None:
+        st.caption(f"USD/SGD {_fx.rate:.4f} ({_fx.rate_date})")
     if st.button("Run snapshot now", icon=":material/save:", help="Fetch from Outlook and archive the current state immediately"):
         outcome = run_snapshot(DATA_DIR)
         st.cache_data.clear()
@@ -64,14 +67,20 @@ def _total_or_dash(series: pd.Series) -> str:
     return f"{series.sum():,.2f}" if series.notna().any() else "—"
 
 
-pnl_alert_hits = alert_engine.compute_pnl_alert_hits(merged, threshold_config)
+fx_rate = fx.get_usd_sgd()
+usd_sgd = fx_rate.rate if fx_rate else None
+if fx_rate is None:
+    st.error("No USD/SGD exchange rate available (feed unreachable and none saved yet), so P&L threshold alerts can't be evaluated.")
+elif not fx_rate.live:
+    st.warning(f"USD/SGD feed unreachable — using last saved rate {fx_rate.rate:.4f} (rate date {fx_rate.rate_date}).")
+pnl_alert_hits = alert_engine.compute_pnl_alert_hits(merged, threshold_config, usd_sgd)
 any_pnl_alert = pd.Series(False, index=merged.index)
 for hit in pnl_alert_hits.values():
     any_pnl_alert |= hit
 
 # Log to the shared alert history (shown in the panel on every tab), and keep it in sync
 # even when nobody has this page open -- the scheduled snapshot job calls this too.
-current_alerts = alert_engine.compute_alerts(merged, threshold_config)
+current_alerts = alert_engine.compute_alerts(merged, threshold_config, usd_sgd)
 archive_db.sync_alerts("prop_accounts", current_alerts)
 
 with st.container(horizontal=True):
@@ -96,8 +105,9 @@ for metric_col, hit in pnl_alert_hits.items():
     if hit.any():
         parts = []
         for _, row in merged.loc[hit].iterrows():
-            th = pnl_thresholds.effective_threshold(threshold_config, row["Client_No"], metric_col)
-            parts.append(f"{row['Client_No']} ({row[metric_col]:,.2f} ≤ {th:,.2f})")
+            th_sgd = alert_engine.threshold_sgd(threshold_config, row["Client_No"], metric_col, usd_sgd)
+            th_usd = pnl_thresholds.effective_threshold(threshold_config, row["Client_No"], metric_col)
+            parts.append(f"{row['Client_No']} (SGD {row[metric_col]:,.2f} ≤ SGD {th_sgd:,.2f} = USD {th_usd:,.2f})")
         st.error(f"⚠ {pnl_thresholds.METRICS[metric_col]} threshold breached: " + "; ".join(parts))
 
 with st.container(border=True):

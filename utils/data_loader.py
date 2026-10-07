@@ -19,7 +19,7 @@ DATA_DIR = BASE_DIR / "data"
 
 MARGIN_FILENAME = "MarginNowV2.xls"
 FINANCIAL_SUMMARY_FILENAME = "FinancialSummary.xls"
-EQUITY_MONITOR_GLOB = "Propriety_Account_Equity_Monitor_V2-*.xls"
+EQUITY_MONITOR_GLOB = "Propriety_Account_Equity_Monitor_V2*.xls"
 
 IDENTIFIER_COLUMNS = {"AE Code", "Client Grp", "Client_No", "Account_Type"}
 FINANCIAL_SUMMARY_IDENTIFIER_COLUMNS = {
@@ -85,6 +85,39 @@ def load_financial_summary(path: Path | str) -> pd.DataFrame:
         else:
             df[col] = _clean_numeric(df[col])
     return df
+
+
+def load_adjustment_file(path: Path | str) -> pd.DataFrame:
+    """Load the monthly adjustment report -> DataFrame[report_date, client_no, amount].
+
+    Columns are matched by name, ignoring case/underscores/spaces (Report_Date, Client_No,
+    Adjustments). The header row is found automatically in case the report has a title block.
+    If a Curr_Cd column is present, only the base-SGD rows are kept, matching the Excel monitor.
+    """
+    raw = pd.read_excel(path, engine="xlrd" if str(path).lower().endswith(".xls") else None, header=None)
+
+    def norm(value) -> str:
+        return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+    header_row = next(
+        (i for i in range(min(10, len(raw))) if {"clientno", "reportdate"} <= {norm(v) for v in raw.iloc[i]}),
+        None,
+    )
+    if header_row is None:
+        raise ValueError("couldn't find a header row containing Report_Date and Client_No")
+    df = raw.iloc[header_row + 1:].copy()
+    df.columns = [norm(v) for v in raw.iloc[header_row]]
+    amount_col = next((c for c in df.columns if c in ("adjustments", "adjustment", "amount")), None)
+    if amount_col is None:
+        raise ValueError("couldn't find an Adjustments column")
+    if "currcd" in df.columns:
+        df = df[df["currcd"].astype(str).str.upper().str.contains("SGD")]
+    out = pd.DataFrame({
+        "report_date": df["reportdate"].astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
+        "client_no": df["clientno"].astype(str).str.strip(),
+        "amount": _clean_numeric(df[amount_col]),
+    })
+    return out.dropna(subset=["amount"]).reset_index(drop=True)
 
 
 @dataclass

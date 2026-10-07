@@ -72,6 +72,26 @@ CREATE TABLE IF NOT EXISTS credit_excess (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS daily_adjustments (
+    report_date TEXT NOT NULL,
+    client_no TEXT NOT NULL,
+    amount REAL NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (report_date, client_no)
+);
+
+CREATE TABLE IF NOT EXISTS job_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fx_rates (
+    pair TEXT PRIMARY KEY,
+    rate REAL NOT NULL,
+    rate_date TEXT,
+    fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS testing_periods (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_no TEXT NOT NULL,
@@ -421,11 +441,72 @@ def load_credit_excess_map(db_path: Path = DB_PATH) -> dict[str, float]:
 
 
 def load_adjustments_map(month: str, db_path: Path = DB_PATH) -> dict[str, float]:
-    """{client_no: total adjustment amount} for the given month, summed across uploads."""
+    """{client_no: total adjustment amount} for the given month.
+
+    Uploaded adjustments (Settings page) win if there are any for the month. Otherwise the
+    adjustment file downloaded from Jasper is used -- but only the rows for the month's
+    *first trading day*; the file exists every day and later days must not be applied.
+    """
     df = load_adjustments(month=month, db_path=db_path)
-    if df.empty:
-        return {}
-    return df.groupby("client_no")["amount"].sum().to_dict()
+    if not df.empty:
+        return df.groupby("client_no")["amount"].sum().to_dict()
+
+    conn = get_connection(db_path)
+    try:
+        prefix = month.replace("-", "")
+        row = conn.execute(
+            "SELECT MIN(report_date) FROM eod_snapshots WHERE report_date LIKE ?", (prefix + "%",)
+        ).fetchone()
+        first_date = row[0] if row else None
+        if first_date is None:
+            return {}
+        rows = conn.execute(
+            "SELECT client_no, SUM(amount) FROM daily_adjustments WHERE report_date = ? GROUP BY client_no",
+            (first_date,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {client_no: amount for client_no, amount in rows}
+
+
+def save_daily_adjustments(adjustments_df: pd.DataFrame, client_nos: list[str],
+                            db_path: Path = DB_PATH) -> int:
+    """Store the adjustment file's rows per report date (replacing any earlier copy of that date/account)."""
+    subset = adjustments_df[adjustments_df["client_no"].isin(client_nos)]
+    if subset.empty:
+        return 0
+    now = pd.Timestamp.now().isoformat()
+    conn = get_connection(db_path)
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO daily_adjustments (report_date, client_no, amount, ingested_at) VALUES (?, ?, ?, ?)",
+            [(r.report_date, r.client_no, float(r.amount), now) for r in subset.itertuples()],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(subset)
+
+
+def get_state(key: str, db_path: Path = DB_PATH) -> str | None:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT value FROM job_state WHERE key = ?", (key,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def set_state(key: str, value: str, db_path: Path = DB_PATH) -> None:
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO job_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def add_testing_period(client_no: str, start_date: str, end_date: str, note: str | None,

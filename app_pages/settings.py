@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from utils import admin_auth, archive_db, data_loader, pnl_thresholds
+from utils import admin_auth, archive_db, data_loader, fx, pnl_thresholds
 from utils.cached_loaders import load_prop_snapshot
 from utils.data_loader import DATA_DIR
 
@@ -55,12 +55,34 @@ with st.container(border=True):
     if ce_df.empty:
         st.caption("No credit excess configured.")
     else:
-        st.dataframe(
-            ce_df.rename(columns={"client_no": "Account", "amount": "Amount", "note": "Note", "updated_at": "Updated at"}),
-            hide_index=True,
-            column_config={"Amount": st.column_config.NumberColumn(format="%.2f")},
-        )
-        if admin:
+        ce_view = ce_df.rename(columns={"client_no": "Account", "amount": "Amount", "note": "Note", "updated_at": "Updated at"})
+        ce_config = {"Amount": st.column_config.NumberColumn(format="%.2f")}
+        if not admin:
+            st.dataframe(ce_view, hide_index=True, column_config=ce_config)
+        else:
+            st.caption("Edit an amount or note directly in the table, then click Save edits.")
+            ce_edited = st.data_editor(
+                ce_view, hide_index=True, column_config=ce_config, disabled=["Account", "Updated at"],
+                key="ce_editor",
+            )
+            if st.button("Save edits", icon=":material/save:", key="ce_edit_save"):
+                changed = 0
+                for (_, before), (_, after) in zip(ce_view.iterrows(), ce_edited.iterrows()):
+                    same_note = (before["Note"] if pd.notna(before["Note"]) else "") == (after["Note"] if pd.notna(after["Note"]) else "")
+                    if before["Amount"] == after["Amount"] and same_note:
+                        continue
+                    if pd.isna(after["Amount"]):
+                        st.warning(f"{after['Account']}: amount can't be blank (use Remove to delete it).")
+                        continue
+                    archive_db.set_credit_excess(
+                        [after["Account"]], float(after["Amount"]), after["Note"] if pd.notna(after["Note"]) and after["Note"] else None
+                    )
+                    changed += 1
+                if changed:
+                    _saved(f"Updated credit excess for {changed} account(s)")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
             with st.container(horizontal=True):
                 clear_acct = st.selectbox("Remove credit excess for", ce_df["client_no"], key="ce_clear_acct")
                 if st.button("Remove", icon=":material/delete:", key="ce_clear_btn"):
@@ -72,10 +94,19 @@ with st.container(border=True):
 with st.container(border=True):
     st.subheader("P&L alert thresholds")
     st.caption(
-        "Set a loss floor per metric for each account. An account alerts when its P&L falls at or below "
-        "its threshold. There is no default: an account with no threshold here is never alerted on. "
+        "Set a loss floor per metric for each account, **in USD**. Every P&L figure is in SGD, so each threshold "
+        "is converted at the live USD/SGD rate when it is checked. An account alerts when its P&L falls at or "
+        "below its threshold. There is no default: an account with no threshold here is never alerted on. "
         "Saving overwrites all three metrics for the selected accounts; a blank field means no alert for that metric."
     )
+    _rate = fx.get_usd_sgd()
+    if _rate is None:
+        st.error("No USD/SGD rate available (feed unreachable and none saved yet) — P&L alerts can't be evaluated.")
+    else:
+        st.caption(
+            f"Current rate: 1 USD = {_rate.rate:.4f} SGD (rate date {_rate.rate_date}"
+            + ("" if _rate.live else "; feed unreachable, using last saved rate") + ")"
+        )
     if admin:
         def _load_account_thresholds() -> None:
             accts = st.session_state.get("pnl_th_accounts") or []
@@ -99,13 +130,13 @@ with st.container(border=True):
         with st.form("pnl_account_threshold_form", border=False):
             with st.container(horizontal=True):
                 th_acct_intraday = st.number_input(
-                    "Intraday P&L alert ≤", value=None, step=1000.0, key="pnl_th_acct_intraday",
+                    "Intraday P&L alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_intraday",
                 )
                 th_acct_daily = st.number_input(
-                    "Daily P&L (prev day) alert ≤", value=None, step=1000.0, key="pnl_th_acct_daily",
+                    "Daily P&L (prev day) alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_daily",
                 )
                 th_acct_monthly = st.number_input(
-                    "Monthly P&L alert ≤", value=None, step=1000.0, key="pnl_th_acct_monthly",
+                    "Monthly P&L alert ≤ (USD)", value=None, step=1000.0, key="pnl_th_acct_monthly",
                 )
             if st.form_submit_button("Save thresholds", icon=":material/save:"):
                 th_accounts = st.session_state.pnl_th_accounts
@@ -127,10 +158,30 @@ with st.container(border=True):
             [{"Account": acct, **{pnl_thresholds.METRICS[m]: v for m, v in metrics.items()}}
              for acct, metrics in sorted(thresholds.items())]
         )
-        st.dataframe(
-            th_table, hide_index=True,
-            column_config={name: st.column_config.NumberColumn(format="%.2f") for name in pnl_thresholds.METRICS.values()},
-        )
+        th_config = {name: st.column_config.NumberColumn(format="%.2f") for name in pnl_thresholds.METRICS.values()}
+        if not admin:
+            st.dataframe(th_table, hide_index=True, column_config=th_config)
+        else:
+            st.caption("Edit a threshold directly in the table (clear a cell for no alert on that metric), then click Save edits.")
+            th_edited = st.data_editor(
+                th_table, hide_index=True, column_config=th_config, disabled=["Account"], key="th_editor",
+            )
+            if st.button("Save edits", icon=":material/save:", key="th_edit_save"):
+                metric_by_label = {label: key for key, label in pnl_thresholds.METRICS.items()}
+                changed = 0
+                for (_, before), (_, after) in zip(th_table.iterrows(), th_edited.iterrows()):
+                    if before.equals(after):
+                        continue
+                    pnl_thresholds.set_account_thresholds(after["Account"], {
+                        metric_by_label[label]: (float(after[label]) if pd.notna(after[label]) else None)
+                        for label in metric_by_label
+                    })
+                    changed += 1
+                if changed:
+                    _saved(f"Updated thresholds for {changed} account(s)")
+                    st.rerun()
+                else:
+                    st.info("No changes to save.")
         if admin:
             with st.container(horizontal=True):
                 clear_th_acct = st.selectbox("Remove thresholds for", sorted(thresholds), key="pnl_th_clear_acct")
@@ -148,7 +199,9 @@ with st.container(border=True):
     st.caption(
         "Upload the start-of-month adjustment file (deposits/withdrawals/corrections) so P&L excludes them — "
         "these aren't trading P&L. Positive amount = equity added, negative = equity removed. The amount is "
-        "removed from the month's first trading day (intraday, then previous-day P&L) and from monthly P&L."
+        "removed from the month's first trading day (intraday, then previous-day P&L) and from monthly P&L. "
+        "If the adjustment file is downloaded from Jasper automatically, its first-trading-day rows are used; "
+        "anything uploaded here for a month takes precedence over the file."
     )
     if admin:
         adj_file = st.file_uploader("Adjustment file", type=["csv", "xls", "xlsx"], key="adj_upload")

@@ -1,7 +1,15 @@
 {
   "exe_path": "C:\\path\\to\\JasperDownloader.exe",
   "credential_username": "jasper",
-  "keyword": "REPLACE_WITH_YOUR_KEYWORD",
-  "reports": ["MarginNowV2", "FinancialSummary"],
-  "timeout_seconds": 300
+  "keywords": {
+    "live": "REPLACE_WITH_LIVE_KEYWORD",
+    "eod": "REPLACE_WITH_EOD_KEYWORD"
+  },
+  "reports": {
+    "live": ["MarginNowV2", "Propriety_Account_Equity_Monitor_V2"],
+    "eod": ["FinancialSummary", "ProprietoryMonitoring"]
+  },
+  "equity_monitor_via_jasper": true,
+  "adjustment_file": "ProprietoryMonitoring.xls",
+  "timeout_seconds": 420
 }

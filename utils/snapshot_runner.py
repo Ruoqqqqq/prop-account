@@ -23,10 +23,8 @@ _PLACEHOLDER_MARKERS = ("REPLACE_WITH_", "C:\\path\\to\\")
 
 
 def _jasper_configured(config: dict) -> bool:
-    return not any(
-        marker in config.get("exe_path", "") or marker in config.get("keyword", "")
-        for marker in _PLACEHOLDER_MARKERS
-    )
+    values = [config.get("exe_path", ""), config.get("keyword", ""), *(config.get("keywords") or {}).values()]
+    return not any(marker in value for value in values for marker in _PLACEHOLDER_MARKERS)
 
 
 def run_snapshot(data_dir: Path) -> dict:
@@ -47,15 +45,19 @@ def run_snapshot(data_dir: Path) -> dict:
         jasper_config = None
 
     if jasper_config is not None and _jasper_configured(jasper_config):
-        success, output = jasper_downloader.download_reports()
+        success, output = jasper_downloader.download_reports(keyword_set="live")
         result["jasper"] = success
         if not success:
             result["errors"].append(f"Jasper download failed: {output.strip()[:300]}")
     elif jasper_config is not None:
         result["errors"].append("jasper_config.json still has placeholder values -- skipping automated download")
 
-    fetched = outlook_fetcher.fetch_latest_attachment(data_dir)
-    result["fetched_email"] = fetched is not None
+    # Once the equity monitor comes down with the "live" Jasper keyword there is no email to wait for.
+    if jasper_config is not None and jasper_config.get("equity_monitor_via_jasper"):
+        result["fetched_email"] = True
+    else:
+        fetched = outlook_fetcher.fetch_latest_attachment(data_dir)
+        result["fetched_email"] = fetched is not None
 
     prop_result = data_loader.build_prop_snapshot(data_dir)
     if prop_result is None:

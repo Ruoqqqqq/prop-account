@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from utils import archive_db, data_loader, pnl_thresholds
+from utils import archive_db, data_loader, fx, pnl_thresholds
 
 
 @dataclass
@@ -81,22 +81,42 @@ def build_prop_status(data_dir: Path) -> PropStatus | None:
     )
 
 
-def compute_pnl_alert_hits(merged: pd.DataFrame, config: dict) -> dict[str, pd.Series]:
-    """{metric_col: boolean Series} of which rows are at/below that metric's
-    effective threshold (per-account override, falling back to the default)."""
+def _usd_sgd(usd_sgd: float | None) -> float | None:
+    if usd_sgd is not None:
+        return usd_sgd
+    rate = fx.get_usd_sgd()
+    return rate.rate if rate else None
+
+
+def threshold_sgd(config: dict, client_no: str, metric: str, usd_sgd: float | None) -> float | None:
+    """The account's threshold converted from USD (how it is entered) to SGD (how P&L is held)."""
+    usd = pnl_thresholds.effective_threshold(config, client_no, metric)
+    if usd is None or usd_sgd is None:
+        return None
+    return usd * usd_sgd
+
+
+def compute_pnl_alert_hits(merged: pd.DataFrame, config: dict, usd_sgd: float | None = None) -> dict[str, pd.Series]:
+    """{metric_col: boolean Series} of which rows are at/below that metric's threshold.
+
+    Thresholds are stored in USD and P&L is in SGD, so each threshold is converted at the
+    live USD/SGD rate. With no rate available at all, no P&L alert can be evaluated.
+    """
+    usd_sgd = _usd_sgd(usd_sgd)
     hits = {}
     for metric_col in pnl_thresholds.METRICS:
         row_thresholds = pd.to_numeric(
-            merged["Client_No"].apply(lambda cn: pnl_thresholds.effective_threshold(config, cn, metric_col)),
+            merged["Client_No"].apply(lambda cn: threshold_sgd(config, cn, metric_col, usd_sgd)),
             errors="coerce",
         )
         hits[metric_col] = row_thresholds.notna() & merged[metric_col].notna() & (merged[metric_col] <= row_thresholds)
     return hits
 
 
-def compute_alerts(merged: pd.DataFrame, config: dict | None = None) -> list[dict]:
+def compute_alerts(merged: pd.DataFrame, config: dict | None = None, usd_sgd: float | None = None) -> list[dict]:
     """Every currently-true alert condition: [{"alert_type", "client_no", "message"}, ...]."""
     config = config or pnl_thresholds.load_config()
+    usd_sgd = _usd_sgd(usd_sgd)
     alerts = []
     for _, row in merged.loc[merged["breaching_past_testing"]].iterrows():
         alerts.append({
@@ -108,14 +128,14 @@ def compute_alerts(merged: pd.DataFrame, config: dict | None = None) -> list[dic
             "alert_type": "breach", "client_no": row["Client_No"],
             "message": "Account flagged as breaching",
         })
-    for metric_col, hit in compute_pnl_alert_hits(merged, config).items():
+    for metric_col, hit in compute_pnl_alert_hits(merged, config, usd_sgd).items():
         for _, row in merged.loc[hit].iterrows():
-            threshold = pnl_thresholds.effective_threshold(config, row["Client_No"], metric_col)
+            usd = pnl_thresholds.effective_threshold(config, row["Client_No"], metric_col)
             alerts.append({
                 "alert_type": f"pnl_{metric_col}", "client_no": row["Client_No"],
                 "message": (
-                    f"{pnl_thresholds.METRICS[metric_col]} {row[metric_col]:,.2f} "
-                    f"at or below threshold {threshold:,.2f}"
+                    f"{pnl_thresholds.METRICS[metric_col]} SGD {row[metric_col]:,.2f} "
+                    f"at or below threshold USD {usd:,.2f} (SGD {usd * usd_sgd:,.2f} @ {usd_sgd:.4f})"
                 ),
             })
     return alerts
