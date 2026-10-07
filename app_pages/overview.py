@@ -13,7 +13,7 @@ result = load_prop_snapshot()
 if result is None:
     st.warning(
         "No equity monitor file found (expected a file matching "
-        "`Propriety_Account_Equity_Monitor_V2*.xls`) or `MarginNowV2.xls` is missing."
+        "`Propriety_Account_Equity_Monitor*V2*.xls`) or `MarginNowV2.xls` is missing."
     )
     st.stop()
 
