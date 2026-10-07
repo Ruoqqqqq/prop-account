@@ -87,7 +87,7 @@ Reports that need a **trade date** (FinancialSummary, the monthly adjustment fil
 | Set | Reports | Runs | Script |
 |---|---|---|---|
 | `live` | `MarginNowV2`, prop equity monitor | every 10 min | `archive_snapshot.py` |
-| `eod` | `FinancialSummary`, monthly adjustment | once a day from ~10:30, retried until it succeeds | `eod_refresh.py` |
+| `eod` | `FinancialSummary`, monthly adjustment | once a day from 09:30 (US DST) / 10:30 (US standard time), retried until it succeeds | `eod_refresh.py` |
 
 In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `ProprietoryMonitoring.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor_V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
 
@@ -107,10 +107,11 @@ $live = New-ScheduledTaskAction -Execute $pythonExe -Argument "archive_snapshot.
 $liveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10)
 Register-ScheduledTask -TaskName "NBS Live Snapshot" -Action $live -Trigger $liveTrigger -Settings $settings
 
-# EOD: 10:30 daily, retried every 20 min for 4 hours (stops doing work after the first success)
+# EOD: from 09:30 daily, every 20 min for 5 hours. The job itself waits until 09:30 (US DST) or 10:30 (US standard time)
+# and stops doing work after the first success
 $eod = New-ScheduledTaskAction -Execute $pythonExe -Argument "eod_refresh.py" -WorkingDirectory $workDir
-$eodTrigger = New-ScheduledTaskTrigger -Daily -At 10:30am
-$eodTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At 10:30am -RepetitionInterval (New-TimeSpan -Minutes 20) -RepetitionDuration (New-TimeSpan -Hours 4)).Repetition
+$eodTrigger = New-ScheduledTaskTrigger -Daily -At 9:30am
+$eodTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At 9:30am -RepetitionInterval (New-TimeSpan -Minutes 20) -RepetitionDuration (New-TimeSpan -Hours 5)).Repetition
 Register-ScheduledTask -TaskName "NBS EOD Refresh" -Action $eod -Trigger $eodTrigger
 ```
 
