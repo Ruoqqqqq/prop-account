@@ -21,9 +21,15 @@ live, _report_ts, _eq_path = result
 client_nos = live["Client_No"].tolist()
 
 
-def _saved(message: str) -> None:
+def _saved(message: str, area: str, detail: str | None = None) -> None:
+    """Record the change in the settings audit trail under the admin's username, then confirm."""
+    archive_db.log_settings_change(admin_auth.admin_user(), area, message, detail)
     st.cache_data.clear()
     st.toast(message, icon=":material/check_circle:")
+
+
+def _num(value) -> str:
+    return "blank" if pd.isna(value) else f"{value:,.2f}"
 
 
 # ---------------------------------------------------------------- credit excess
@@ -49,7 +55,10 @@ with st.container(border=True):
                     st.warning("Select at least one account first.")
                 else:
                     archive_db.set_credit_excess(ce_accounts, ce_amount, ce_note or None)
-                    _saved(f"Saved credit excess for {len(ce_accounts)} account(s)")
+                    _saved(
+                        f"Saved credit excess for {len(ce_accounts)} account(s)", "Credit excess",
+                        f"{', '.join(ce_accounts)}: amount {ce_amount:,.2f}" + (f" ({ce_note})" if ce_note else ""),
+                    )
 
     ce_df = archive_db.load_credit_excess()
     if ce_df.empty:
@@ -67,6 +76,7 @@ with st.container(border=True):
             )
             if st.button("Save edits", icon=":material/save:", key="ce_edit_save"):
                 changed = 0
+                edit_log = []
                 for (_, before), (_, after) in zip(ce_view.iterrows(), ce_edited.iterrows()):
                     same_note = (before["Note"] if pd.notna(before["Note"]) else "") == (after["Note"] if pd.notna(after["Note"]) else "")
                     if before["Amount"] == after["Amount"] and same_note:
@@ -78,8 +88,9 @@ with st.container(border=True):
                         [after["Account"]], float(after["Amount"]), after["Note"] if pd.notna(after["Note"]) and after["Note"] else None
                     )
                     changed += 1
+                    edit_log.append(f"{after['Account']}: {_num(before['Amount'])} -> {_num(after['Amount'])}")
                 if changed:
-                    _saved(f"Updated credit excess for {changed} account(s)")
+                    _saved(f"Updated credit excess for {changed} account(s)", "Credit excess", "; ".join(edit_log))
                     st.rerun()
                 else:
                     st.info("No changes to save.")
@@ -87,7 +98,7 @@ with st.container(border=True):
                 clear_acct = st.selectbox("Remove credit excess for", ce_df["client_no"], key="ce_clear_acct")
                 if st.button("Remove", icon=":material/delete:", key="ce_clear_btn"):
                     archive_db.clear_credit_excess(clear_acct)
-                    _saved(f"Removed credit excess for {clear_acct}")
+                    _saved(f"Removed credit excess for {clear_acct}", "Credit excess", clear_acct)
                     st.rerun()
 
 # ---------------------------------------------------------------- P&L thresholds
@@ -148,7 +159,12 @@ with st.container(border=True):
                             "intraday_pnl": th_acct_intraday, "daily_pnl_prev_day": th_acct_daily,
                             "monthly_pnl": th_acct_monthly,
                         })
-                    _saved(f"Saved thresholds for {len(th_accounts)} account(s)")
+                    _saved(
+                        f"Saved thresholds for {len(th_accounts)} account(s)", "P&L thresholds",
+                        f"{', '.join(th_accounts)}: intraday {_num(th_acct_intraday if th_acct_intraday is not None else float('nan'))}, "
+                        f"daily {_num(th_acct_daily if th_acct_daily is not None else float('nan'))}, "
+                        f"monthly {_num(th_acct_monthly if th_acct_monthly is not None else float('nan'))} (USD)",
+                    )
 
     thresholds = pnl_thresholds.load_config()["accounts"]
     if not thresholds:
@@ -169,16 +185,21 @@ with st.container(border=True):
             if st.button("Save edits", icon=":material/save:", key="th_edit_save"):
                 metric_by_label = {label: key for key, label in pnl_thresholds.METRICS.items()}
                 changed = 0
+                edit_log = []
                 for (_, before), (_, after) in zip(th_table.iterrows(), th_edited.iterrows()):
                     if before.equals(after):
                         continue
+                    edit_log.append(after["Account"] + ": " + ", ".join(
+                        f"{label} {_num(before[label])} -> {_num(after[label])}"
+                        for label in metric_by_label if not (pd.isna(before[label]) and pd.isna(after[label])) and before[label] != after[label]
+                    ) + " (USD)")
                     pnl_thresholds.set_account_thresholds(after["Account"], {
                         metric_by_label[label]: (float(after[label]) if pd.notna(after[label]) else None)
                         for label in metric_by_label
                     })
                     changed += 1
                 if changed:
-                    _saved(f"Updated thresholds for {changed} account(s)")
+                    _saved(f"Updated thresholds for {changed} account(s)", "P&L thresholds", "; ".join(edit_log))
                     st.rerun()
                 else:
                     st.info("No changes to save.")
@@ -187,7 +208,7 @@ with st.container(border=True):
                 clear_th_acct = st.selectbox("Remove thresholds for", sorted(thresholds), key="pnl_th_clear_acct")
                 if st.button("Remove", icon=":material/delete:", key="pnl_th_clear_btn"):
                     pnl_thresholds.clear_account_thresholds(clear_th_acct)
-                    _saved(f"Removed thresholds for {clear_th_acct}")
+                    _saved(f"Removed thresholds for {clear_th_acct}", "P&L thresholds", clear_th_acct)
                     st.rerun()
     missing = sorted(set(client_nos) - set(thresholds))
     if missing:
@@ -242,7 +263,10 @@ with st.container(border=True):
                     to_save["amount"] = pd.to_numeric(to_save["amount"], errors="coerce")
                     to_save = to_save.dropna(subset=["amount"])
                     rows_saved = archive_db.add_adjustments(to_save, adj_month, adj_note or None)
-                    _saved(f"Saved {rows_saved} adjustment row(s) for {adj_month}")
+                    _saved(
+                        f"Saved {rows_saved} adjustment row(s) for {adj_month}", "Monthly adjustments",
+                        f"file {adj_file.name}, month {adj_month}, total {to_save['amount'].sum():,.2f}" + (f" ({adj_note})" if adj_note else ""),
+                    )
 
     current_month = pd.Timestamp.now().strftime("%Y-%m")
     existing_adj = archive_db.load_adjustments(month=current_month)
@@ -287,7 +311,10 @@ with st.container(border=True):
                     proof_bytes=testing_proof.getvalue() if testing_proof is not None else None,
                     proof_filename=testing_proof.name if testing_proof is not None else None,
                 )
-                _saved(f"Testing period added for {testing_account}")
+                _saved(
+                    f"Testing period added for {testing_account}", "Testing periods",
+                    f"{testing_account}: {testing_start} to {testing_end}" + (f" ({testing_note})" if testing_note else ""),
+                )
 
     testing_periods_df = archive_db.load_testing_periods()
     testing_periods_df = testing_periods_df[testing_periods_df["client_no"].isin(client_nos)]
@@ -348,12 +375,12 @@ with st.container(border=True):
                             proof_filename=edit_proof.name if edit_proof is not None else None,
                             remove_proof=remove_proof,
                         )
-                        _saved("Testing period updated")
+                        _saved("Testing period updated", "Testing periods", f"{label}: now {edit_start} to {edit_end}")
                         st.rerun()
 
                 if delete_clicked:
                     archive_db.delete_testing_period(period_id)
-                    _saved("Testing period deleted")
+                    _saved("Testing period deleted", "Testing periods", label)
                     st.rerun()
 
 # ---------------------------------------------------------------- EOD backfill
@@ -381,6 +408,35 @@ with st.container(border=True):
                 new_rows = archive_db.archive_eod_if_new(fs_df, client_nos)
                 dates_label = ", ".join(report_dates) if report_dates else "unknown"
                 if new_rows:
+                    archive_db.log_settings_change(
+                        admin_auth.admin_user(), "EOD backfill", f"Archived {new_rows} EOD row(s)",
+                        f"{uploaded_file.name}: date(s) {dates_label}",
+                    )
                     st.success(f"{uploaded_file.name}: archived {new_rows} new row(s) for date(s) {dates_label}")
                 else:
                     st.info(f"{uploaded_file.name}: date(s) {dates_label} already archived, no new rows")
+
+# ---------------------------------------------------------------- audit trail
+with st.container(border=True):
+    st.subheader("Settings audit trail")
+    st.caption("Every settings change, with the username given when the settings were unlocked.")
+    audit = archive_db.load_settings_audit()
+    if audit.empty:
+        st.caption("No settings changes recorded yet.")
+    else:
+        with st.form("settings_audit_filters", border=False):
+            with st.container(horizontal=True):
+                a_users = st.multiselect("User", sorted(audit["username"].unique()))
+                a_areas = st.multiselect("Area", sorted(audit["area"].unique()))
+            st.form_submit_button("Apply filters", icon=":material/filter_alt:")
+        view = audit
+        if a_users:
+            view = view[view["username"].isin(a_users)]
+        if a_areas:
+            view = view[view["area"].isin(a_areas)]
+        st.dataframe(
+            view[["created_at", "username", "area", "action", "detail"]].rename(columns={
+                "created_at": "When", "username": "User", "area": "Area", "action": "Change", "detail": "Detail",
+            }),
+            hide_index=True,
+        )

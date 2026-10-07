@@ -15,9 +15,10 @@ All input and generated data lives in `data/`, separate from the app code:
 
 ## Pages
 
-1. **Prop accounts** — the prop account list from the equity monitor file, joined with live equity/margin figures, showing position ratio, breach flags, and P&L (see below). Includes a manual "Run snapshot now" button, **Backfill historical EOD data** and **Monthly equity adjustments** uploaders, a **Testing periods** section (with edit/delete and approval-proof upload), and a **Remarks & supporting documents** section for logging notes and screenshots against a breach.
-2. **Archive history** — browse everything the archive job has recorded, one row per snapshot batch with a per-batch CSV download (account number, position ratio, intra lots, breach, and P&L), filter by account/date range, chart position ratio over time.
-3. **Settings** — credit excess (excluded from the live balance), P&L alert thresholds, monthly equity adjustments, testing periods and EOD backfill. Anyone can view; changing anything needs the admin password (see below).
+1. **Overview** — KPIs on top (prop accounts, breaching now, breach alerts today, past testing period, past P&L threshold, open alerts, P&L today / previous day / month to date), then every prop account with all its real-time figures, the equity trend, and remarks. Also has the manual "Run snapshot now" button.
+2. **Alert audit** — every alert, who handled it and how, with filters and attachment downloads, plus a "Needs action" list to handle open alerts from.
+3. **Archive history** — browse everything the archive job has recorded, one row per snapshot batch with a per-batch CSV download, filter by account/date range, chart position ratio over time.
+4. **Settings** — credit excess, P&L thresholds, monthly adjustments, testing periods, EOD backfill, and the settings audit trail. Anyone can view; changing anything needs the admin password plus a username (see below).
 
 ## Prop account P&L definitions
 
@@ -89,7 +90,7 @@ Reports that need a **trade date** (FinancialSummary, the monthly adjustment fil
 | `live` | `MarginNowV2`, prop equity monitor | every 10 min | `archive_snapshot.py` |
 | `eod` | `FinancialSummary`, monthly adjustment | once a day from 09:30 (US DST) / 10:30 (US standard time), retried until it succeeds | `eod_refresh.py` |
 
-In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `ProprietoryMonitoring.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor_V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
+In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `ProprietoryMonitoring.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor*V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
 
 **How the dashboard always shows the latest good EOD data:** the dashboard never reads FinancialSummary directly -- it reads the EOD history archived in SQLite. `eod_refresh.py` only archives a download that really has a new trade date (non-empty, not future-dated, not all-zero equity). An empty/not-ready file is logged as "not ready" and the previous day's data stays in place until a later retry succeeds; once a run succeeds, further runs that day exit immediately without calling Jasper. `data/eod_refresh_log.txt` shows each attempt; `python eod_refresh.py --force` re-runs even after a success.
 
@@ -131,16 +132,22 @@ A breach covered by an *active* testing period isn't counted in the "Breaching a
 
 Also on the Prop accounts page: set a **default** loss floor per P&L metric (intraday, daily prev-day, monthly), then optionally **override it per account** — any account whose P&L for that metric falls at or below its *effective* threshold (its own override if set, else the default) triggers its own alert, plus an "Accounts past P&L threshold" KPI. Leave a field blank to disable alerting for that metric/account. Persisted to `data/pnl_alert_thresholds.json` (`utils/pnl_thresholds.py`), so it survives restarts; independent of the breach/testing-period logic above (a different thing being monitored).
 
-## Alert log & shared alert panel
+## Who is using it, and alert handling
 
-Every prop-account alert condition (breach, breach-past-testing, P&L threshold) is reconciled into a persistent `alert_log` table (`archive_db.sync_alerts`) instead of only being computed live on page load — so there's an actual history, not just current state. An alert gets one row when it first becomes true and stays that one row (no duplicates on every rerun) until the condition clears, at which point `resolved_at` is set.
+**Identity:** opening the dashboard asks for your name first (kept for the browser session and remembered in the URL as `?user=` so a refresh doesn't ask again). It is written into everything you do: remarks, alert handling and settings changes. It is a label for the audit trail, not authentication. "Not you?" at the top switches name.
 
-`utils/alert_engine.py` holds the shared "build prop status + compute alerts" logic, called from three places so the log stays current regardless of who's looking at what:
-- The Prop accounts page, on every load.
-- `archive_snapshot.py` / `snapshot_runner.py`, on every scheduled run — so alerts stay fresh even when nobody has the dashboard open.
-- `utils/alert_panel.py`, rate-limited to once per 30s (it re-reads `MarginNowV2.xls`, so it doesn't re-scan on every single click).
+**Alert log:** every prop-account alert condition (breach, breach-past-testing, P&L threshold) is reconciled into the `alert_log` table (`archive_db.sync_alerts`): one row when the condition first becomes true, `resolved_at` set when it clears. `utils/alert_engine.py` computes them from the Overview page, the scheduled snapshot job, and the live watcher below, so the log stays current whoever has the dashboard open.
 
-A hideable **Alerts** panel (`utils/alert_panel.py`) is mounted once in `streamlit_app.py`, above `page.run()`, so it shows on **every tab** — collapsed by default, with the active count in its label, expanding to show both currently-active alerts and resolved history. Only the Prop accounts page populates it today; any other page can contribute by tagging its own alerts with a distinct `source` and calling `archive_db.sync_alerts(source, alerts)`.
+**Handling an alert:** an alert is *open* while its condition is true and nobody has acted on it. Any one of three actions closes it out and is recorded with the acting username in `alert_actions`:
+1. **Dismiss with remark** (remark required),
+2. **Upload supporting document** (file required, note optional),
+3. **Testing progress** (dates + note, optional evidence; for breach alerts this also creates a testing period for the account).
+
+**Pop-up:** every browser session gets a pop-up for each open alert it hasn't been shown yet (`Decide later` or closing the pop-up just hides it for this session; the "open alerts" banner on every page and the Alert audit tab keep it reachable). A 15-second background check (`utils/alert_ui.py`) makes new alerts pop up without anyone clicking.
+
+**Several people at once:** only the first action counts (`archive_db.record_alert_action` claims the alert inside one transaction). Everyone else gets "This alert is handled by one of your teammates" -- as a notice if their pop-up was open when a teammate acted, or on submit if both clicked at the same moment.
+
+**Settings audit trail:** every change on the Settings page is logged in `settings_audit` (when, username, area, what changed with old -> new values) and shown at the bottom of Settings.
 
 ## Margin calls (REMOVED — page and loader deleted Oct 2026; backup zip kept beside project)
 
@@ -208,7 +215,8 @@ utils/
     cached_loaders.py           # Streamlit cache_data wrappers, keyed on file mtime
     archive_db.py                # SQLite archive: prop snapshots, EOD history, remarks, adjustments, testing periods, alert_log
     alert_engine.py               # shared "build prop status + compute alerts" logic (no Streamlit dependency)
-    alert_panel.py                 # hideable cross-tab alert panel, mounted in streamlit_app.py
+    alert_ui.py                     # alert pop-up / banner / live watcher / action form
+    identity.py                     # asks each user for their name, used in all logs
     pnl_thresholds.py                # per-account P&L alert threshold config, persisted to data/pnl_alert_thresholds.json
     outlook_fetcher.py             # pulls the latest position-ratio report from Outlook
     jasper_downloader.py            # automates the Jasper exe (optional, see above)

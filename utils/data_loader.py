@@ -19,7 +19,7 @@ DATA_DIR = BASE_DIR / "data"
 
 MARGIN_FILENAME = "MarginNowV2.xls"
 FINANCIAL_SUMMARY_FILENAME = "FinancialSummary.xls"
-EQUITY_MONITOR_GLOB = "Propriety_Account_Equity_Monitor_V2*.xls"
+EQUITY_MONITOR_GLOB = "Propriety_Account_Equity_Monitor*V2*.xls"  # email: ...Monitor_V2-<ts>.xls; Jasper: ...MonitorV2.xls
 
 IDENTIFIER_COLUMNS = {"AE Code", "Client Grp", "Client_No", "Account_Type"}
 FINANCIAL_SUMMARY_IDENTIFIER_COLUMNS = {
