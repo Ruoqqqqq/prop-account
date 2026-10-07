@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS alert_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_actions_alert ON alert_actions (alert_id);
 
+CREATE TABLE IF NOT EXISTS audit_clear_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cleared_at TEXT NOT NULL,
+    username TEXT NOT NULL,
+    cutoff TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    alerts_removed INTEGER NOT NULL,
+    settings_rows_removed INTEGER NOT NULL,
+    archive_file TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -808,5 +819,87 @@ def load_settings_audit(db_path: Path = DB_PATH) -> pd.DataFrame:
         return pd.read_sql_query(
             "SELECT * FROM settings_audit ORDER BY created_at DESC, id DESC", conn, parse_dates=["created_at"]
         )
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- clearing audit history
+AUDIT_ARCHIVE_DIR = DATA_DIR / "audit_archives"
+
+
+def count_clearable_audit(cutoff: str, db_path: Path = DB_PATH) -> dict:
+    """What clearing would remove: resolved alerts (and their actions) and settings rows before `cutoff` (YYYY-MM-DD).
+
+    Alerts still active (condition not cleared) are never removed, handled or not -- they are live state.
+    """
+    conn = get_connection(db_path)
+    try:
+        alerts = conn.execute(
+            "SELECT COUNT(*) FROM alert_log WHERE resolved_at IS NOT NULL AND triggered_at < ?", (cutoff,)
+        ).fetchone()[0]
+        settings = conn.execute("SELECT COUNT(*) FROM settings_audit WHERE created_at < ?", (cutoff,)).fetchone()[0]
+    finally:
+        conn.close()
+    return {"alerts": alerts, "settings": settings}
+
+
+def clear_audit_history(cutoff: str, clear_alerts: bool, clear_settings: bool, username: str,
+                         db_path: Path = DB_PATH, archive_dir: Path = AUDIT_ARCHIVE_DIR) -> dict:
+    """Export everything about to be removed to a zip of CSVs, then delete it.
+
+    The export happens first and the deletion only proceeds if the zip was written. The clearing
+    itself is recorded permanently in audit_clear_log (who, when, what, where the export is) --
+    that table has no delete path in the app, so history can be cleared but never silently.
+    Attachment files are left on disk.
+    """
+    import zipfile
+
+    now = pd.Timestamp.now()
+    conn = get_connection(db_path)
+    try:
+        frames: dict[str, pd.DataFrame] = {}
+        if clear_alerts:
+            frames["alert_log.csv"] = pd.read_sql_query(
+                "SELECT * FROM alert_log WHERE resolved_at IS NOT NULL AND triggered_at < ?", conn, params=(cutoff,))
+            ids = [int(i) for i in frames["alert_log.csv"]["id"]]
+            frames["alert_actions.csv"] = pd.read_sql_query(
+                f"SELECT * FROM alert_actions WHERE alert_id IN ({','.join('?' * len(ids)) or 'NULL'})", conn, params=ids)
+        if clear_settings:
+            frames["settings_audit.csv"] = pd.read_sql_query(
+                "SELECT * FROM settings_audit WHERE created_at < ?", conn, params=(cutoff,))
+
+        archive_file = None
+        if any(not f.empty for f in frames.values()):
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = archive_dir / f"audit_before_{cutoff}_cleared_{now:%Y%m%d%H%M%S}.zip"
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, frame in frames.items():
+                    zf.writestr(name, frame.to_csv(index=False))
+            archive_file = str(archive_path.relative_to(BASE_DIR)) if BASE_DIR in archive_path.parents else str(archive_path)
+
+        alerts_removed = settings_removed = 0
+        if clear_alerts and not frames["alert_log.csv"].empty:
+            ids = [int(i) for i in frames["alert_log.csv"]["id"]]
+            marks = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM alert_actions WHERE alert_id IN ({marks})", ids)
+            alerts_removed = conn.execute(f"DELETE FROM alert_log WHERE id IN ({marks})", ids).rowcount
+        if clear_settings:
+            settings_removed = conn.execute("DELETE FROM settings_audit WHERE created_at < ?", (cutoff,)).rowcount
+        scope = ", ".join(n for n, on in (("alert log", clear_alerts), ("settings audit trail", clear_settings)) if on)
+        conn.execute(
+            "INSERT INTO audit_clear_log (cleared_at, username, cutoff, scope, alerts_removed, settings_rows_removed, archive_file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now.isoformat(), username, cutoff, scope, alerts_removed, settings_removed, archive_file),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"alerts_removed": alerts_removed, "settings_rows_removed": settings_removed, "archive_file": archive_file}
+
+
+def load_audit_clear_log(db_path: Path = DB_PATH) -> pd.DataFrame:
+    conn = get_connection(db_path)
+    try:
+        return pd.read_sql_query("SELECT * FROM audit_clear_log ORDER BY cleared_at DESC", conn, parse_dates=["cleared_at"])
     finally:
         conn.close()

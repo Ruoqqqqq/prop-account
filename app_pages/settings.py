@@ -440,3 +440,65 @@ with st.container(border=True):
             }),
             hide_index=True,
         )
+
+# ---------------------------------------------------------------- clear audit history
+with st.container(border=True):
+    st.subheader("Clear audit history")
+    st.caption(
+        "Removes old, resolved alert records and/or old settings audit entries. Everything removed is first exported "
+        "to a zip under `data/audit_archives/`, and the clearing itself is recorded permanently below. Alerts that are "
+        "still active are never removed."
+    )
+    if not admin:
+        st.caption("Locked — unlock above to use.")
+    else:
+        with st.container(horizontal=True):
+            clear_cutoff = st.date_input(
+                "Clear records older than", value=(pd.Timestamp.now() - pd.Timedelta(days=90)).date(),
+                max_value=pd.Timestamp.now().date(), key="clear_cutoff",
+            )
+            clear_scope = st.multiselect(
+                "What to clear", ["Alert log", "Settings audit trail"], default=["Alert log", "Settings audit trail"],
+                key="clear_scope",
+            )
+        counts = archive_db.count_clearable_audit(clear_cutoff.isoformat())
+        st.caption(
+            f"Would remove {counts['alerts'] if 'Alert log' in clear_scope else 0} resolved alert(s) and "
+            f"{counts['settings'] if 'Settings audit trail' in clear_scope else 0} settings entr(ies) before {clear_cutoff}."
+        )
+        with st.form("clear_audit_form", border=True):
+            clear_pw = st.text_input("Re-enter admin password", type="password")
+            clear_phrase = st.text_input("Type CLEAR AUDIT HISTORY to confirm")
+            if st.form_submit_button("Export and clear", icon=":material/delete_forever:", type="primary"):
+                if not clear_scope:
+                    st.warning("Choose what to clear.")
+                elif clear_phrase.strip() != "CLEAR AUDIT HISTORY":
+                    st.error("Confirmation phrase doesn't match.")
+                elif not admin_auth.verify_password(clear_pw):
+                    st.error("Incorrect admin password.")
+                else:
+                    outcome = archive_db.clear_audit_history(
+                        clear_cutoff.isoformat(), "Alert log" in clear_scope, "Settings audit trail" in clear_scope,
+                        admin_auth.admin_user(),
+                    )
+                    archive_db.log_settings_change(
+                        admin_auth.admin_user(), "Audit history", "Cleared audit history",
+                        f"before {clear_cutoff}: {outcome['alerts_removed']} alert(s), {outcome['settings_rows_removed']} "
+                        f"settings entr(ies); export {outcome['archive_file']}",
+                    )
+                    st.cache_data.clear()
+                    st.success(
+                        f"Removed {outcome['alerts_removed']} alert(s) and {outcome['settings_rows_removed']} settings "
+                        f"entr(ies). Export: {outcome['archive_file'] or 'nothing to export'}"
+                    )
+
+    clear_log = archive_db.load_audit_clear_log()
+    if not clear_log.empty:
+        st.markdown("**Clearing history (permanent)**")
+        st.dataframe(
+            clear_log[["cleared_at", "username", "cutoff", "scope", "alerts_removed", "settings_rows_removed", "archive_file"]].rename(columns={
+                "cleared_at": "When", "username": "User", "cutoff": "Older than", "scope": "Scope",
+                "alerts_removed": "Alerts removed", "settings_rows_removed": "Settings entries removed", "archive_file": "Export",
+            }),
+            hide_index=True,
+        )

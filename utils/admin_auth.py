@@ -32,6 +32,12 @@ def _configured_password() -> str | None:
         return None
 
 
+def verify_password(entered: str) -> bool:
+    """Re-check the admin password for destructive actions, even in an unlocked session."""
+    password = _configured_password()
+    return password is not None and hmac.compare_digest((entered or "").encode(), password.encode())
+
+
 def is_admin() -> bool:
     return bool(st.session_state.get(_SESSION_KEY))
 
