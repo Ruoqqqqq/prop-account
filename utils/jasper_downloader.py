@@ -72,6 +72,25 @@ def get_password(credential_username: str) -> str:
     return password
 
 
+def keyword_for(config: dict, keyword_set: str) -> str:
+    """The Jasper keyword for a download set.
+
+    "live" = MarginNowV2 + prop equity monitor (no trade date needed, safe to run every few minutes).
+    "eod"  = FinancialSummary + monthly adjustment (need a trade date that only rolls over after the
+             morning EOD process, so they run once a day -- see eod_refresh.py).
+    Configs that only have the older single "keyword" use it for "live".
+    """
+    keywords = config.get("keywords") or {}
+    if keyword_set in keywords:
+        return keywords[keyword_set]
+    if keyword_set == "live" and config.get("keyword"):
+        return config["keyword"]
+    raise ValueError(
+        f"jasper_config.json has no keyword for the '{keyword_set}' download set "
+        f'(add it under "keywords": {{"{keyword_set}": "..."}}).'
+    )
+
+
 DEFAULT_TIMEOUT = 400  # a real run takes ~5 minutes manually; leave headroom over that
 
 
@@ -83,7 +102,8 @@ def _force_kill_tree(pid: int) -> None:
     )
 
 
-def download_reports(config_path: Path = CONFIG_PATH, timeout: int | None = None) -> tuple[bool, str]:
+def download_reports(config_path: Path = CONFIG_PATH, timeout: int | None = None,
+                      keyword_set: str = "live") -> tuple[bool, str]:
     """Run the exe once with the configured keyword + password.
 
     Drives the exe through a real Windows pseudo-console (ConPTY, via
@@ -100,7 +120,7 @@ def download_reports(config_path: Path = CONFIG_PATH, timeout: int | None = None
 
     config = load_config(config_path)
     exe_path = config["exe_path"]
-    keyword = config["keyword"]
+    keyword = keyword_for(config, keyword_set)
     password = get_password(config["credential_username"])
     timeout = timeout if timeout is not None else config.get("timeout_seconds", DEFAULT_TIMEOUT)
 

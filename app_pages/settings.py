@@ -199,7 +199,9 @@ with st.container(border=True):
     st.caption(
         "Upload the start-of-month adjustment file (deposits/withdrawals/corrections) so P&L excludes them — "
         "these aren't trading P&L. Positive amount = equity added, negative = equity removed. The amount is "
-        "removed from the month's first trading day (intraday, then previous-day P&L) and from monthly P&L."
+        "removed from the month's first trading day (intraday, then previous-day P&L) and from monthly P&L. "
+        "If the adjustment file is downloaded from Jasper automatically, its first-trading-day rows are used; "
+        "anything uploaded here for a month takes precedence over the file."
     )
     if admin:
         adj_file = st.file_uploader("Adjustment file", type=["csv", "xls", "xlsx"], key="adj_upload")

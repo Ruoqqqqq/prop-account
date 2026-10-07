@@ -80,22 +80,41 @@ Once both are in place, `run_snapshot()` (and therefore `archive_snapshot.py` an
 
 Confirmed working end-to-end (2026-09-18): the exe requires its working directory to be its own install folder (it looks for `../ConfigFiles/config.json` and `../sfx/*.mp3` relative to wherever it's launched from), so `jasper_downloader.py` launches it with `cwd` set to the exe's own folder. After downloading, it asks "Would you like to run another task? (ENTER/y to run again)" and then "Please press ENTER to exit." — both get answered automatically (decline, then confirm exit) so the exe closes on its own once it's done, in ~2-3 minutes. Without answering those, every run used to sit there until the timeout force-killed it and got logged as a failure, even though the login and both downloads had already succeeded — if `archive_log.txt` ever shows a run taking the full timeout again, check for a new/different post-download prompt first before assuming it's an auth problem. The timeout defaults to 400s as a safety ceiling — override it with an optional `"timeout_seconds"` key in `jasper_config.json` if needed.
 
-### Hourly refresh (separate from the 7x/day archive schedule)
+### Two download sets: live (every 10 min) and EOD (once a day)
 
-`refresh_jasper_data.py` just runs the Jasper download step on its own, independent of `archive_snapshot.py` — so `MarginNowV2.xls`/`FinancialSummary.xls` can refresh hourly while the position-ratio archive keeps its own 7x/day cadence tied to the Outlook emails. `archive_snapshot.py` always reads whichever files are newest in `data/` when it runs, so the two schedules don't need to line up.
+Reports that need a **trade date** (FinancialSummary, the monthly adjustment file) only have data after the morning EOD process (~9-10am). Downloaded every few minutes, they came back empty or wrong-dated from midnight until then. So the Jasper reports are split into two keywords in `jasper_config.json`:
 
-Register the hourly task once from PowerShell:
+| Set | Reports | Runs | Script |
+|---|---|---|---|
+| `live` | `MarginNowV2`, prop equity monitor | every 10 min | `archive_snapshot.py` |
+| `eod` | `FinancialSummary`, monthly adjustment | once a day from ~10:30, retried until it succeeds | `eod_refresh.py` |
+
+In the Jasper exe, create a second keyword for the EOD pair and point the outputs at `data/` (`FinancialSummary.xls`, `MonthlyAdjustment.xls` -- or set `adjustment_file` in the config; the equity monitor can use any filename matching `Propriety_Account_Equity_Monitor_V2*.xls`). Set `"equity_monitor_via_jasper": true` so the live run stops looking in Outlook.
+
+**How the dashboard always shows the latest good EOD data:** the dashboard never reads FinancialSummary directly -- it reads the EOD history archived in SQLite. `eod_refresh.py` only archives a download that really has a new trade date (non-empty, not future-dated, not all-zero equity). An empty/not-ready file is logged as "not ready" and the previous day's data stays in place until a later retry succeeds; once a run succeeds, further runs that day exit immediately without calling Jasper. `data/eod_refresh_log.txt` shows each attempt; `python eod_refresh.py --force` re-runs even after a success.
+
+**Monthly adjustment:** the file exists every trade date, but only the **first trading day of the month's** rows are used (each day's rows are stored in `daily_adjustments`; `archive_db.load_adjustments_map` picks the month's earliest archived EOD date). Anything uploaded on the Settings page for that month takes precedence over the file.
+
+Register both tasks from PowerShell (adjust the paths):
 
 ```powershell
 $pythonExe = "C:\Users\ruoqingyuan\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 $workDir = "C:\Users\ruoqingyuan\Desktop\NBS dashboard"
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 9)
 
-$action = New-ScheduledTaskAction -Execute $pythonExe -Argument "refresh_jasper_data.py" -WorkingDirectory $workDir
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([TimeSpan]::MaxValue)
-Register-ScheduledTask -TaskName "NBS Jasper Hourly Refresh" -Action $action -Trigger $trigger -Description "Hourly download of MarginNowV2.xls and FinancialSummary.xls from Jasper"
+# live: every 10 minutes, never two overlapping runs
+$live = New-ScheduledTaskAction -Execute $pythonExe -Argument "archive_snapshot.py" -WorkingDirectory $workDir
+$liveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName "NBS Live Snapshot" -Action $live -Trigger $liveTrigger -Settings $settings
+
+# EOD: 10:30 daily, retried every 20 min for 4 hours (stops doing work after the first success)
+$eod = New-ScheduledTaskAction -Execute $pythonExe -Argument "eod_refresh.py" -WorkingDirectory $workDir
+$eodTrigger = New-ScheduledTaskTrigger -Daily -At 10:30am
+$eodTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At 10:30am -RepetitionInterval (New-TimeSpan -Minutes 20) -RepetitionDuration (New-TimeSpan -Hours 4)).Repetition
+Register-ScheduledTask -TaskName "NBS EOD Refresh" -Action $eod -Trigger $eodTrigger
 ```
 
-It logs to both the console and `data/jasper_refresh_log.txt`.
+(`refresh_jasper_data.py` still downloads the `live` set on its own if you only want fresh files without a snapshot.)
 
 ## Remarks & supporting documents
 
