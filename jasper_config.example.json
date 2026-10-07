@@ -11,5 +11,7 @@
   },
   "equity_monitor_via_jasper": true,
   "adjustment_file": "ProprietoryMonitoring.xls",
+  "eod_start_dst": "09:30",
+  "eod_start_standard": "10:30",
   "timeout_seconds": 420
 }

@@ -4,3 +4,4 @@ xlrd>=2.0
 pywin32
 keyring
 pywinpty
+tzdata

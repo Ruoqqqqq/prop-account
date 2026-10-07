@@ -12,7 +12,9 @@ latest *good* EOD data until the next day's file arrives. No Streamlit imports.
 from __future__ import annotations
 
 import logging
+from datetime import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -23,6 +25,32 @@ log = logging.getLogger(__name__)
 
 STATE_KEY = "last_eod_success_date"
 DEFAULT_ADJUSTMENT_FILE = "ProprietoryMonitoring.xls"
+
+# The EOD process follows the US market close, so in Singapore time it finishes an hour
+# earlier while US daylight saving is in effect. Task Scheduler can't follow another
+# timezone's DST, so the task is scheduled from the earlier time all year and the job
+# itself waits until the right local start time for the current season.
+DEFAULT_START_DST = "09:30"
+DEFAULT_START_STANDARD = "10:30"
+DEFAULT_US_TIMEZONE = "America/New_York"
+DEFAULT_LOCAL_TIMEZONE = "Asia/Singapore"
+
+
+def _parse_hhmm(value: str) -> time:
+    hour, minute = value.split(":")
+    return time(int(hour), int(minute))
+
+
+def earliest_start(now: pd.Timestamp, config: dict | None = None) -> time:
+    """Local time of day before which an EOD download isn't attempted (depends on US DST)."""
+    config = config or {}
+    local = now.tz_localize(config.get("local_timezone", DEFAULT_LOCAL_TIMEZONE)) if now.tzinfo is None else now
+    us_time = local.tz_convert(ZoneInfo(config.get("eod_timezone", DEFAULT_US_TIMEZONE)))
+    us_dst = bool(us_time.dst())
+    return _parse_hhmm(
+        config.get("eod_start_dst", DEFAULT_START_DST) if us_dst
+        else config.get("eod_start_standard", DEFAULT_START_STANDARD)
+    )
 
 
 def _financial_summary_ready(fs_df: pd.DataFrame, today: pd.Timestamp) -> tuple[bool, str]:
@@ -43,7 +71,7 @@ def run_eod_refresh(data_dir: Path, now: pd.Timestamp | None = None, force: bool
                     db_path: Path = archive_db.DB_PATH) -> dict:
     """Returns {"status": ..., "message": ..., "eod_rows": int, "adjustment_rows": int}.
 
-    status is one of: ok, already_done, not_ready, no_new_date, download_failed, error.
+    status is one of: ok, already_done, too_early, not_ready, no_new_date, download_failed, error.
     Only "ok" marks today as done, so a scheduled retry loop stops after the first success.
     """
     now = now or pd.Timestamp.now()
@@ -58,6 +86,12 @@ def run_eod_refresh(data_dir: Path, now: pd.Timestamp | None = None, force: bool
         config = jasper_downloader.load_config()
     except FileNotFoundError:
         config = None
+
+    start = earliest_start(now, config)
+    if not force and now.time() < start:
+        result.update(status="too_early", message=f"Before today's EOD start time {start:%H:%M} (US DST-dependent)")
+        return result
+
     if config is not None and _jasper_configured(config):
         success, output = jasper_downloader.download_reports(keyword_set="eod")
         if not success:
